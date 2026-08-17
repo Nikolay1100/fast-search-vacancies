@@ -1,0 +1,148 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: fastsearch_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - fastsearch_network
+
+  # Redis for Caching / Temporary data
+  redis:
+    image: redis:alpine
+    container_name: fastsearch_redis
+    restart: always
+    networks:
+      - fastsearch_network
+
+  # RabbitMQ for Messages
+  rabbitmq:
+    build:
+      context: ./rabbitmq
+      dockerfile: Dockerfile
+    container_name: fastsearch_rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ./rabbitmq-init.sh:/docker-entrypoint-initdb.d/rabbitmq-init.sh
+    networks:
+      - fastsearch_network
+
+  # Laravel API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastsearch_backend
+    restart: always
+    command: php artisan serve --host=0.0.0.0 --port=80
+    volumes:
+      - ./backend:/var/www
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - fastsearch_network
+
+  # Laravel Scheduler для выполнения Cron-задач
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastsearch_scheduler
+    restart: always
+    command: php artisan schedule:work
+    volumes:
+      - ./backend:/var/www
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - fastsearch_network
+
+  # Воркер для приема сырых сообщений от ТВ (Custom Consumer)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastsearch_worker
+    restart: always
+    command: php artisan app:consume-telegram
+    volumes:
+      - ./backend:/var/www
+    depends_on:
+      - backend
+    networks:
+      - fastsearch_network
+
+  # Воркер для отправки уведомлений (Laravel Jobs)
+  worker_notifications:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastsearch_worker_notifications
+    restart: always
+    command: php artisan queue:work rabbitmq
+    volumes:
+      - ./backend:/var/www
+    depends_on:
+      - backend
+    networks:
+      - fastsearch_network
+
+  # Python Parser
+  parser:
+    build:
+      context: ./parser
+      dockerfile: Dockerfile
+    container_name: fastsearch_parser
+    restart: always
+    command: python -u main.py
+    env_file: .env
+    volumes:
+      - ./parser:/app
+      - parser_session:/sessions
+    depends_on:
+      - rabbitmq
+    networks:
+      - fastsearch_network
+  # Vue Frontend (Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: build-stage
+    container_name: fastsearch_frontend
+    command: npm run dev -- --host
+    restart: always
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "8099:5173"
+    depends_on:
+      - backend
+    networks:
+      - fastsearch_network
+networks:
+  fastsearch_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  parser_session:

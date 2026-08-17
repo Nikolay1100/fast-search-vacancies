@@ -1,0 +1,6 @@
+parser/.env
+.env
+/.idea/deployment.xml
+/.idea/webServers.xml
+/parser/fast_search_session_v3.session
+/.vscode/settings.json
